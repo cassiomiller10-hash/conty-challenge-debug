@@ -99,7 +99,8 @@ export function createApp(db: DatabaseSync) {
     }
 
     const key = normalizeKey(rawKey);
-    const existing = one<Ledger>(db, "SELECT * FROM ledger WHERE idempotency_key = ?", key);
+    // A missão paga uma vez: qualquer lançamento já existente para ela encerra o pedido.
+    const existing = one<Ledger>(db, "SELECT * FROM ledger WHERE mission_id = ?", mission.id);
     if (existing) {
       const payout = one<Payout>(db, "SELECT * FROM payouts WHERE mission_id = ?", mission.id) ?? null;
       return c.json({ mission_id: mission.id, status: mission.status, ledger: existing, payout });
@@ -158,11 +159,16 @@ export function createApp(db: DatabaseSync) {
       mission_id: payout.mission_id,
       provider_status: providerStatus,
     });
-    db.prepare("UPDATE payouts SET provider_status = ?, status = ? WHERE id = ?").run(
-      providerStatus,
-      status,
-      payout.id,
-    );
+    // Pago é terminal: o provedor reenvia eventos, e um PENDING ou FAILED atrasado não pode desfazer o pagamento.
+    // A condição fica no UPDATE para valer mesmo se outro callback gravar entre a leitura e a escrita.
+    const updated = db
+      .prepare("UPDATE payouts SET provider_status = ?, status = ? WHERE id = ? AND (status <> 'paid' OR ? = 'paid')")
+      .run(providerStatus, status, payout.id, status);
+    if (updated.changes === 0) {
+      const current = one<Payout>(db, "SELECT * FROM payouts WHERE id = ?", payout.id) ?? payout;
+      log({ level: 40, msg: "payout.callback.ignored", payout_id: payout.id, provider_status: providerStatus, status: current.status });
+      return c.json({ id: current.id, mission_id: current.mission_id, provider_status: current.provider_status, status: current.status });
+    }
     log({ level: 30, msg: "payout.status", payout_id: payout.id, status });
     return c.json({ id: payout.id, mission_id: payout.mission_id, provider_status: providerStatus, status });
   });
