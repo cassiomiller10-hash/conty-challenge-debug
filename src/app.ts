@@ -99,7 +99,8 @@ export function createApp(db: DatabaseSync) {
     }
 
     const key = normalizeKey(rawKey);
-    const existing = one<Ledger>(db, "SELECT * FROM ledger WHERE idempotency_key = ?", key);
+    // A missão paga uma vez: qualquer lançamento já existente para ela encerra o pedido.
+    const existing = one<Ledger>(db, "SELECT * FROM ledger WHERE mission_id = ?", mission.id);
     if (existing) {
       const payout = one<Payout>(db, "SELECT * FROM payouts WHERE mission_id = ?", mission.id) ?? null;
       return c.json({ mission_id: mission.id, status: mission.status, ledger: existing, payout });
